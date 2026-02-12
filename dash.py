@@ -4,11 +4,14 @@ import pandas as pd
 import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 # === CONFIG ===
-API_TOKEN = "10474935eaa36cb34609a1930d72444bb650c23fe8b83a0908b576f9ad655c11adf9a59a"
+API_TOKEN = os.getenv("API_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 BASE_URL = "https://bhomes.api-us1.com/api/3/channel/whatsapp/flow-execution"
-WEBHOOK_URL = "https://engageteam.app.n8n.cloud/webhook/2602b74e-145a-4fe0-8293-cfb368e5a94f"  # <-- Replace
 
 headers = {
     "Api-Token": API_TOKEN,
@@ -163,3 +166,4 @@ if st.session_state.results_data is not None and st.button("Send to Webhook"):
             st.error(f"Webhook returned error: {resp.status_code}")
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to send webhook: {e}")
+
