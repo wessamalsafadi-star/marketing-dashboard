@@ -19,10 +19,15 @@ headers = {
     "accept": "application/json"
 }
 
-st.title("ActiveCampaign Completed Flow Executions Extractor")
-st.markdown("Paste Flow URLs or IDs (one per line)")
+st.title("ActiveCampaign WhatsApp Flow Executions Extractor")
 
-input_text = st.text_area("Flows", height=200)
+# === TWO COLUMN INPUT ===
+st.markdown("Enter one flow per line. URLs and names must match line-by-line.")
+col1, col2 = st.columns(2)
+with col1:
+    urls_input = st.text_area("Flow URLs or IDs", height=200, placeholder="https://bhomes.activehosted.com/.../flow-id\nflow-id-2")
+with col2:
+    names_input = st.text_area("Flow Names", height=200, placeholder="Daily Newsletter\nPromo Campaign")
 
 # Session state
 if "results_data" not in st.session_state:
@@ -40,6 +45,22 @@ def extract_id(text):
     return text
 
 
+def derive_status(r: dict) -> str:
+    """Derive real outcome status from sub-fields since top-level status can be misleading."""
+    if r.get("completed", 0) == 1:
+        return "COMPLETED"
+    elif r.get("failed", 0) == 1:
+        return "FAILED"
+    elif r.get("canceled", 0) == 1:
+        return "CANCELED"
+    elif r.get("expired", 0) == 1:
+        return "EXPIRED"
+    elif r.get("running", 0) == 1:
+        return "RUNNING"
+    else:
+        return r.get("status", "UNKNOWN")
+
+
 def fetch_all_pages(flow_id):
     url = BASE_URL
     params = {"flow": flow_id, "page": 1}
@@ -50,7 +71,7 @@ def fetch_all_pages(flow_id):
     retries = Retry(
         total=5,
         backoff_factor=1,
-        status_forcelist=[500, 502, 503, 503, 504],
+        status_forcelist=[500, 502, 503, 504],
         allowed_methods=["GET"]
     )
     session.mount("https://", HTTPAdapter(max_retries=retries))
@@ -80,26 +101,23 @@ def fetch_all_pages(flow_id):
     return all_results
 
 
-def extract_completed_executions(flow_id, results):
-    completed_rows = []
-
+def extract_executions(flow_id, flow_name, results):
+    """Extract all executions regardless of status."""
+    rows = []
     for r in results:
-        if r.get("completed", 0) == 1:
-            completed_rows.append({
-                "flow_id": flow_id,
-                "execution_id": r.get("id"),
-                "created_on": r.get("created_on"),
-                "num_contacts": r.get("num_contacts", 0),
-                "flow_version": r.get("flow_version"),
-                "status_last_change_on": r.get("status_last_change_on")
-            })
-
-    return completed_rows
+        rows.append({
+            "flow_name": flow_name,
+            "execution_id": r.get("id"),
+            "created_on": r.get("created_on"),
+            "status": derive_status(r),
+        })
+    return rows
 
 
 def send_in_batches(data, batch_size=1000):
     total = len(data)
     batches = [data[i:i + batch_size] for i in range(0, total, batch_size)]
+    progress = st.progress(0)
 
     for idx, batch in enumerate(batches):
         payload = {
@@ -112,65 +130,90 @@ def send_in_batches(data, batch_size=1000):
             resp = requests.post(WEBHOOK_URL, json=payload, timeout=30)
 
             if not resp.ok:
-                st.error(f"Batch {idx + 1} failed: {resp.status_code}")
+                st.error(f"Batch {idx + 1}/{len(batches)} failed: {resp.status_code} — {resp.text}")
                 return False
+            else:
+                st.write(f"✅ Batch {idx + 1}/{len(batches)} sent ({len(batch)} records)")
 
         except requests.exceptions.RequestException as e:
             st.error(f"Batch {idx + 1} error: {e}")
             return False
 
-        st.progress((idx + 1) / len(batches))
+        progress.progress((idx + 1) / len(batches))
 
     return True
 
 
-# === RUN ANALYSIS ===
+# === PARSE INPUTS ===
 
-if st.button("Extract Completed Executions"):
+def parse_inputs(urls_text, names_text):
+    urls = [x.strip() for x in urls_text.splitlines() if x.strip()]
+    names = [x.strip() for x in names_text.splitlines() if x.strip()]
 
-    flows = [extract_id(x) for x in input_text.splitlines() if x.strip()]
+    if len(urls) != len(names):
+        return None, f"Mismatch: {len(urls)} URLs but {len(names)} names. They must match line-by-line."
 
-    if not flows:
-        st.warning("Enter at least one flow")
+    flows = [{"id": extract_id(u), "name": n} for u, n in zip(urls, names)]
+    return flows, None
+
+
+# === RUN EXTRACTION ===
+
+if st.button("Extract Executions"):
+    flows, err = parse_inputs(urls_input or "", names_input or "")
+
+    if err:
+        st.error(err)
         st.stop()
 
-    all_completed = []
+    if not flows:
+        st.warning("Enter at least one flow URL and name.")
+        st.stop()
+
+    all_executions = []
     progress = st.progress(0)
 
-    for i, flow_id in enumerate(flows):
-        with st.spinner(f"Fetching {flow_id}..."):
-            results = fetch_all_pages(flow_id)
-            completed_rows = extract_completed_executions(flow_id, results)
-            all_completed.extend(completed_rows)
+    for i, flow in enumerate(flows):
+        with st.spinner(f"Fetching '{flow['name']}' ({flow['id']})..."):
+            results = fetch_all_pages(flow["id"])
+            rows = extract_executions(flow["id"], flow["name"], results)
+            all_executions.extend(rows)
+            st.write(f"✅ {flow['name']}: {len(rows)} executions fetched")
 
         progress.progress((i + 1) / len(flows))
 
-    # Sort chronologically (important for downstream systems)
-    all_completed.sort(key=lambda x: x["created_on"] or "")
+    # Sort chronologically
+    all_executions.sort(key=lambda x: x["created_on"] or "")
 
-    st.session_state.results_data = all_completed
-    df = pd.DataFrame(all_completed)
+    st.session_state.results_data = all_executions
+    df = pd.DataFrame(all_executions)
     st.session_state.df = df
 
-    st.success(f"Extracted {len(all_completed)} completed executions ✅")
+    st.success(f"Extracted {len(all_executions)} total executions ✅")
 
     if not df.empty:
-        st.write("Preview (first 100 rows)")
+        st.write("Status breakdown:")
+        st.dataframe(df["status"].value_counts().reset_index(), use_container_width=True)
+
+        st.write("Preview (first 100 rows):")
         st.dataframe(df.head(100), use_container_width=True)
 
         st.download_button(
             "Download CSV",
             df.to_csv(index=False),
-            file_name="completed_executions.csv"
+            file_name="flow_executions.csv"
         )
 
 
 # === SEND TO WEBHOOK ===
 
-if st.session_state.results_data is not None and st.button("Send to Webhook"):
+if st.session_state.results_data is not None:
+    st.divider()
+    st.write(f"**{len(st.session_state.results_data)} records ready to send**")
 
-    with st.spinner("Sending batches to webhook..."):
-        success = send_in_batches(st.session_state.results_data)
+    if st.button("Send to Webhook"):
+        with st.spinner("Sending batches to webhook..."):
+            success = send_in_batches(st.session_state.results_data)
 
-        if success:
-            st.success("All batches sent successfully ✅")
+            if success:
+                st.success("All batches sent successfully ✅")
