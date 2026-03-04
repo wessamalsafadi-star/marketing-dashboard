@@ -12,6 +12,7 @@ load_dotenv()
 # === CONFIG ===
 API_TOKEN = os.getenv("API_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 BASE_URL = "https://bhomes.api-us1.com/api/3/channel/whatsapp/flow-execution"
 
 headers = {
@@ -127,7 +128,7 @@ def send_in_batches(data, batch_size=1000):
         }
 
         try:
-            resp = requests.post(WEBHOOK_URL, json=payload, timeout=30)
+            resp = requests.post(WEBHOOK_URL, json=payload, headers={"Authorization": f"Bearer {WEBHOOK_SECRET}"}, timeout=30)
 
             if not resp.ok:
                 st.error(f"Batch {idx + 1}/{len(batches)} failed: {resp.status_code} — {resp.text}")
